@@ -313,6 +313,13 @@ func (c *Collector) collectUnit(conn *dbus.Conn, ch chan<- prometheus.Metric, un
 	case "service", "mount", "socket", "swap", "slice":
 		cgroupPath, err := c.getControlGroup(conn, unit)
 		if err != nil {
+			remainAfterExitProperty, getPropErr := conn.GetUnitTypeProperty(unit.Name, "Service", "RemainAfterExit")
+			if getPropErr == nil {
+				remainAfterExit, ok := remainAfterExitProperty.Value.Value().(bool)
+				if ok && remainAfterExit {
+					break
+				}
+			}
 			logger.Warnf(errUnitMetricsMsg, err)
 		}
 		// Everything below requires a cgroup
