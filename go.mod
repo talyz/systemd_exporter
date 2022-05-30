@@ -1,6 +1,6 @@
 module github.com/povilasv/systemd_exporter
 
-go 1.12
+go 1.13
 
 require (
 	github.com/coreos/go-systemd v0.0.0-20181031085051-9002847aa142

@@ -59,10 +59,11 @@ type Collector struct {
 	cpuTotalDesc                  *prometheus.Desc
 	unitCPUTotal                  *prometheus.Desc
 
-	unitMemCache *prometheus.Desc
-	unitMemRss   *prometheus.Desc
-	unitMemDirty *prometheus.Desc
-	unitMemShmem *prometheus.Desc
+	unitMemFileCache      *prometheus.Desc
+	unitMemAnon           *prometheus.Desc
+	unitMemKernelStack    *prometheus.Desc
+	unitMemFileCacheDirty *prometheus.Desc
+	unitMemFileMapped     *prometheus.Desc
 
 	openFDs  *prometheus.Desc
 	maxFDs   *prometheus.Desc
@@ -143,24 +144,29 @@ func NewCollector(logger log.Logger) (*Collector, error) {
 		[]string{"name", "type", "mode"}, nil,
 	)
 
-	unitMemCache := prometheus.NewDesc(
-		prometheus.BuildFQName(namespace, "", "unit_cached_bytes"),
-		"Unit Page CacheBytes",
+	unitMemFileCache := prometheus.NewDesc(
+		prometheus.BuildFQName(namespace, "", "unit_file_cache_bytes"),
+		"Unit bytes used to cache filesystem data, including tmpfs and shared memory",
 		[]string{"name", "type"}, nil,
 	)
-	unitMemRss := prometheus.NewDesc(
-		prometheus.BuildFQName(namespace, "", "unit_rss_bytes"),
-		"Unit anon+swap cache, incl. transparent hugepages. Not true RSS",
+	unitMemAnon := prometheus.NewDesc(
+		prometheus.BuildFQName(namespace, "", "unit_anon_bytes"),
+		"Unit bytes used in anonymous mappings such as mmap(MAP_ANONYMOUS)",
 		[]string{"name", "type"}, nil,
 	)
-	unitMemDirty := prometheus.NewDesc(
-		prometheus.BuildFQName(namespace, "", "unit_dirty_bytes"),
+	unitMemKernelStack := prometheus.NewDesc(
+		prometheus.BuildFQName(namespace, "", "unit_kernel_stack_bytes"),
+		"Unit bytes allocated to kernel stacks",
+		[]string{"name", "type"}, nil,
+	)
+	unitMemFileCacheDirty := prometheus.NewDesc(
+		prometheus.BuildFQName(namespace, "", "unit_file_cache_dirty_bytes"),
 		"Unit bytes waiting to get written to disk",
 		[]string{"name", "type"}, nil,
 	)
-	unitMemShmem := prometheus.NewDesc(
-		prometheus.BuildFQName(namespace, "", "unit_shmem_bytes"),
-		"",
+	unitMemFileMapped := prometheus.NewDesc(
+		prometheus.BuildFQName(namespace, "", "unit_file_mapped_bytes"),
+		"Unit bytes of cached filesystem data mapped with mmap()",
 		[]string{"name", "type"}, nil,
 	)
 
@@ -209,10 +215,11 @@ func NewCollector(logger log.Logger) (*Collector, error) {
 		socketRefusedConnectionsDesc:  socketRefusedConnectionsDesc,
 		cpuTotalDesc:                  cpuTotalDesc,
 		unitCPUTotal:                  unitCPUTotal,
-		unitMemCache:                  unitMemCache,
-		unitMemRss:                    unitMemRss,
-		unitMemDirty:                  unitMemDirty,
-		unitMemShmem:                  unitMemShmem,
+		unitMemFileCache:              unitMemFileCache,
+		unitMemAnon:                   unitMemAnon,
+		unitMemKernelStack:            unitMemKernelStack,
+		unitMemFileCacheDirty:         unitMemFileCacheDirty,
+		unitMemFileMapped:             unitMemFileMapped,
 		openFDs:                       openFDs,
 		maxFDs:                        maxFDs,
 		vsize:                         vsize,
@@ -313,6 +320,9 @@ func (c *Collector) collectUnit(conn *dbus.Conn, ch chan<- prometheus.Metric, un
 	case "service", "mount", "socket", "swap", "slice":
 		cgroupPath, err := c.getControlGroup(conn, unit)
 		if err != nil {
+			if parseUnitType(unit) == "mount" {
+				break
+			}
 			remainAfterExitProperty, getPropErr := conn.GetUnitTypeProperty(unit.Name, "Service", "RemainAfterExit")
 			if getPropErr == nil {
 				remainAfterExit, ok := remainAfterExitProperty.Value.Value().(bool)
@@ -608,8 +618,8 @@ func (c *Collector) collectUnitCPUMetrics(cgSubpath string, conn *dbus.Conn, ch 
 		return errors.Wrapf(err, errControlGroupReadMsg, "CPU usage")
 	}
 
-	userSeconds := float64(cpuUsage.UsageUserNanosecs()) / 1000000000.0
-	sysSeconds := float64(cpuUsage.UsageSystemNanosecs()) / 1000000000.0
+	userSeconds := float64(cpuUsage.UserMicrosec) / 1_000_000.0
+	sysSeconds := float64(cpuUsage.SystemMicrosec) / 1_000_000.0
 
 	ch <- prometheus.MustNewConstMetric(
 		c.unitCPUTotal, prometheus.CounterValue,
@@ -636,17 +646,20 @@ func (c *Collector) collectUnitMemMetrics(cgSubpath string, conn *dbus.Conn, ch 
 
 	unitType := parseUnitType(unit)
 	ch <- prometheus.MustNewConstMetric(
-		c.unitMemCache, prometheus.GaugeValue,
-		float64(memStat.CacheBytes), unit.Name, unitType)
+		c.unitMemFileCache, prometheus.GaugeValue,
+		float64(memStat.FileBytes), unit.Name, unitType)
 	ch <- prometheus.MustNewConstMetric(
-		c.unitMemRss, prometheus.GaugeValue,
-		float64(memStat.RssBytes), unit.Name, unitType)
+		c.unitMemAnon, prometheus.GaugeValue,
+		float64(memStat.AnonBytes), unit.Name, unitType)
 	ch <- prometheus.MustNewConstMetric(
-		c.unitMemDirty, prometheus.GaugeValue,
-		float64(memStat.DirtyBytes), unit.Name, unitType)
+		c.unitMemKernelStack, prometheus.GaugeValue,
+		float64(memStat.KernelStackBytes), unit.Name, unitType)
 	ch <- prometheus.MustNewConstMetric(
-		c.unitMemShmem, prometheus.GaugeValue,
-		float64(memStat.Shmem), unit.Name, unitType)
+		c.unitMemFileCacheDirty, prometheus.GaugeValue,
+		float64(memStat.FileDirtyBytes), unit.Name, unitType)
+	ch <- prometheus.MustNewConstMetric(
+		c.unitMemFileMapped, prometheus.GaugeValue,
+		float64(memStat.FileMappedBytes), unit.Name, unitType)
 
 	return nil
 }
